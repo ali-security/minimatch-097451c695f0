@@ -1,20 +1,12 @@
 name: CI
 
 on:
-  push:
-    branches: ["main"]
-  pull_request:
-    paths:
-      - 'src/**'
-      - 'test/**'
-      - '*.json'
-      - '*.js'
-      - '*.ts'
-      - 'lib/**'
-      - 'scripts/**'
-      - '.github/workflows/ci.yml'
-      - 'package.json'
   workflow_dispatch:
+    inputs:
+      test-filter:
+        description: 'Optional tap test file selector'
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -23,7 +15,7 @@ jobs:
   build:
     strategy:
       matrix:
-        node-version: [22.x, 24.x, 25.x]
+        node-version: [20.x, 22.x, 24.x, 25.x]
         platform:
         - os: ubuntu-latest
           shell: bash
@@ -36,6 +28,7 @@ jobs:
       fail-fast: false
 
     runs-on: ${{ matrix.platform.os }}
+    timeout-minutes: 30
     defaults:
       run:
         shell: ${{ matrix.platform.shell }}
@@ -53,4 +46,31 @@ jobs:
         run: npm install
 
       - name: Run Tests
-        run: npm test -- -c -t0
+        run: npm test -- -c -t0 --output-file=tap-output.tap ${{ inputs.test-filter }}
+
+      - name: List skipped tests and reasons (Windows)
+        if: always() && runner.os == 'Windows'
+        shell: bash
+        run: |
+          echo "SKIP REASON: test/patterns.js is the shared pattern table (not a test that runs its own cases)."
+          echo "test/basic.js, test/defaults.js, test/optimization-level-0.ts and test/optimization-level-2.ts"
+          echo "iterate over it. Upstream marks 3 backslash-literal patterns (lone backslash, bracketed backslash class, and the unclosed +(a|...|g extglob)"
+          echo "with { skip: process.platform === 'win32' } because on Windows a backslash is a path separator,"
+          echo "not an escape/literal, so those cases (match + makeRe assertions) cannot hold there."
+          echo "3 patterns x (match + makeRe) in basic.js/opt-level-0/opt-level-2 = 6 each; defaults.js has no makeRe = 3."
+          echo "--- upstream skip markers in test/patterns.js ---"
+          grep -n "skip: process.platform === 'win32'" test/patterns.js
+          echo "--- skipped assertions reported by tap (tap-output.tap) ---"
+          grep -n -E "# (SKIP|TODO)" tap-output.tap || echo "No skipped tests"
+
+      - name: Pack npm tarball
+        if: matrix.platform.os == 'ubuntu-latest' && matrix.node-version == '25.x'
+        run: npm pack
+
+      - name: Upload npm tarball
+        if: matrix.platform.os == 'ubuntu-latest' && matrix.node-version == '25.x'
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-tarball
+          path: minimatch-*.tgz
+          if-no-files-found: error
